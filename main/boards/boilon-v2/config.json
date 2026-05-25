@@ -6,7 +6,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
-                "CONFIG_OTA_URL=\"http://175.178.247.160:18002/xiaozhi/ota/\""
+                "CONFIG_OTA_URL=\"http://xiaozhi.heqiuzhi.xyz:18002/xiaozhi/ota/\""
             ]
         }
     ]
