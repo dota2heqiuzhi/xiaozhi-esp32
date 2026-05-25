@@ -56,6 +56,11 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     auto& board = Board::GetInstance();
     auto network = board.GetNetwork();
     auto http = network->CreateHttp(0);
+    // Per-request timeout: 15s. Long enough to tolerate cross-region tunnels
+    // (vless / wireguard) cold-start latency, but short enough that a dead
+    // server doesn't drag retries out for minutes (with MAX_RETRY=10 the
+    // worst-case wall-clock is ~150s instead of the default 30s * 10 = 5min).
+    http->SetTimeout(15000);
     auto user_agent = SystemInfo::GetUserAgent();
     http->SetHeader("Activation-Version", has_serial_number_ ? "2" : "1");
     http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());

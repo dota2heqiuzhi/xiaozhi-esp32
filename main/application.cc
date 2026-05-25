@@ -318,6 +318,18 @@ void Application::HandleActivationDoneEvent() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     });
+
+    // ============================================================
+    // DEBUG: auto-trigger ToggleChatState 5 seconds after activation,
+    // so we can see the WebSocket connection lifecycle without needing
+    // a human to press the button. Remove this block after debugging.
+    // ============================================================
+    Schedule([this]() {
+        ESP_LOGW(TAG, "[DEBUG] auto-toggling chat state in 5s for ws diagnostic");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        ESP_LOGW(TAG, "[DEBUG] >>> calling ToggleChatState() now");
+        ToggleChatState();
+    });
 }
 
 void Application::ActivationTask() {
@@ -396,9 +408,24 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
+    // OTA retry strategy: hammer-then-give-up.
+    //
+    // Background: this device's typical server path goes over a cross-region
+    // tunnel (NPM -> vless -> wireguard -> home LAN). The very first packet of
+    // a fresh connection often gets dropped because intermediate tunnels
+    // haven't warmed up yet, but subsequent attempts succeed once the path is
+    // alive. A human user sees "page failed, hit refresh a few times, works".
+    //
+    // We emulate that exactly: on failure, retry immediately with no delay,
+    // up to MAX_RETRY times. Sleeping between retries is pointless — the
+    // tunnel either woke up on the previous attempt or it didn't, and a
+    // fixed-millisecond wait won't change that.
+    //
+    // If all MAX_RETRY attempts fail, the server is genuinely unreachable
+    // (DNS broken, server down, network outage). Logging an error and giving
+    // up is more honest than dragging on for minutes with exponential backoff.
     const int MAX_RETRY = 10;
     int retry_count = 0;
-    int retry_delay = 10; // Initial retry delay in seconds
 
     auto& board = Board::GetInstance();
     while (true) {
@@ -409,28 +436,23 @@ void Application::CheckNewVersion() {
         if (err != ESP_OK) {
             retry_count++;
             if (retry_count >= MAX_RETRY) {
-                ESP_LOGE(TAG, "Too many retries, exit version check");
+                ESP_LOGE(TAG, "Too many retries (%d), exit version check", MAX_RETRY);
                 return;
             }
 
             char error_message[128];
             snprintf(error_message, sizeof(error_message), "code=%d, url=%s", err, ota_->GetCheckVersionUrl().c_str());
             char buffer[256];
-            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, error_message);
+            // Pass 0 to the format string's "retry in N seconds" slot — we're
+            // not waiting. The user-visible alert just shows the error.
+            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, 0, error_message);
             Alert(Lang::Strings::ERROR, buffer, "cloud_slash", Lang::Sounds::OGG_EXCLAMATION);
 
-            ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (GetDeviceState() == kDeviceStateIdle) {
-                    break;
-                }
-            }
-            retry_delay *= 2; // Double the retry delay
+            ESP_LOGW(TAG, "Check new version failed, retrying immediately (%d/%d)", retry_count, MAX_RETRY);
+            // No vTaskDelay — go straight to the next attempt.
             continue;
         }
         retry_count = 0;
-        retry_delay = 10; // Reset retry delay
 
         if (ota_->HasNewVersion()) {
             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
@@ -716,10 +738,6 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         return;
     }
 
-    // Switch to performance mode before connecting to reduce latency
-    auto& board = Board::GetInstance();
-    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
             return;
@@ -828,10 +846,6 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     if (GetDeviceState() != kDeviceStateConnecting) {
         return;
     }
-
-    // Switch to performance mode before connecting to reduce latency
-    auto& board = Board::GetInstance();
-    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
@@ -1071,18 +1085,11 @@ bool Application::CanEnterSleepMode() {
     return true;
 }
 
-void Application::RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback) {
-    mcp_broadcast_callback_ = std::move(callback);
-}
-
 void Application::SendMcpMessage(const std::string& payload) {
     // Always schedule to run in main task for thread safety
-    Schedule([this, payload](){ 
+    Schedule([this, payload = std::move(payload)]() {
         if (protocol_) {
             protocol_->SendMcpMessage(payload);
-        }
-        if (mcp_broadcast_callback_) {
-            mcp_broadcast_callback_(payload);
         }
     });
 }
