@@ -17,6 +17,9 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+#include "boards/boilon-v2/boilon_network_route.h"
+#endif
 
 #define TAG "MCP"
 
@@ -247,6 +250,9 @@ void McpServer::AddUserOnlyTools() {
             }),
             [display](const PropertyList& properties) -> ReturnValue {
                 auto url = properties["url"].value<std::string>();
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+                url = boilon_network_route::RewriteStrokeUrlForActiveNetwork(std::move(url), TAG);
+#endif
                 auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
 
                 if (!http->Open("GET", url)) {

@@ -2,6 +2,9 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+#include "boards/boilon-v2/boilon_network_route.h"
+#endif
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -24,7 +27,6 @@
 
 #define TAG "Ota"
 
-
 Ota::Ota() {
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // Read Serial Number from efuse user_data
@@ -43,12 +45,21 @@ Ota::Ota() {
 Ota::~Ota() {
 }
 
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+std::string Ota::RewriteUrlForActiveNetwork(std::string url) {
+    return boilon_network_route::RewriteHostForActiveNetwork(std::move(url), TAG);
+}
+#endif
+
 std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
     std::string url = settings.GetString("ota_url");
     if (url.empty()) {
         url = CONFIG_OTA_URL;
     }
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+    url = RewriteUrlForActiveNetwork(url);
+#endif
     return url;
 }
 
@@ -176,8 +187,14 @@ esp_err_t Ota::CheckVersion() {
         cJSON *item = NULL;
         cJSON_ArrayForEach(item, websocket) {
             if (cJSON_IsString(item)) {
-                if (settings.GetString(item->string) != item->valuestring) {
-                    settings.SetString(item->string, item->valuestring);
+                std::string value = item->valuestring;
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+                if (strcmp(item->string, "url") == 0) {
+                    value = RewriteUrlForActiveNetwork(value);
+                }
+#endif
+                if (settings.GetString(item->string) != value) {
+                    settings.SetString(item->string, value);
                 }
             } else if (cJSON_IsNumber(item)) {
                 if (settings.GetInt(item->string) != item->valueint) {
@@ -225,6 +242,9 @@ esp_err_t Ota::CheckVersion() {
         cJSON *url = cJSON_GetObjectItem(firmware, "url");
         if (cJSON_IsString(url)) {
             firmware_url_ = url->valuestring;
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+            firmware_url_ = RewriteUrlForActiveNetwork(firmware_url_);
+#endif
         }
 
         if (cJSON_IsString(version) && cJSON_IsString(url)) {

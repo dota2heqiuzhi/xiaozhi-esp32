@@ -53,6 +53,9 @@ private:
     bool IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion);
     std::string GetActivationPayload();
     std::unique_ptr<Http> SetupHttp();
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+    std::string RewriteUrlForActiveNetwork(std::string url);
+#endif
 };
 
 #endif // _OTA_H
