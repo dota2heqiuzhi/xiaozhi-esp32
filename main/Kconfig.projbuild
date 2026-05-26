@@ -536,6 +536,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_JIUCHUAN
         bool "九川智能"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_BOILON_V2
+        bool "博亿朗二代 Boilon V2"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_LABPLUS_MPYTHON_V3
         bool "labplus mpython_v3 board"
         depends on IDF_TARGET_ESP32S3

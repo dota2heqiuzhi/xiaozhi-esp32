@@ -32,6 +32,8 @@
 #define MAIN_EVENT_START_LISTENING      (1 << 10)
 #define MAIN_EVENT_STOP_LISTENING       (1 << 11)
 #define MAIN_EVENT_STATE_CHANGED        (1 << 12)
+#define MAIN_EVENT_START_SINGLE_TURN    (1 << 13)
+#define MAIN_EVENT_ABORT_TO_IDLE        (1 << 14)
 
 
 enum AecMode {
@@ -99,6 +101,18 @@ public:
     void StartListening();
 
     /**
+     * Start a one-shot conversation turn (event-based, thread-safe).
+     * The device listens once, lets the server detect end-of-speech, replies,
+     * then returns to Idle after TTS stop instead of continuing multi-turn listening.
+     */
+    void StartSingleTurn();
+
+    /**
+     * Abort current listening/speaking turn and return to Idle (event-based, thread-safe).
+     */
+    void AbortToIdle();
+
+    /**
      * Stop listening (event-based, thread-safe)
      * Sends MAIN_EVENT_STOP_LISTENING to be handled in Run()
      */
@@ -143,6 +157,7 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool assets_version_checked_ = false;
+    bool single_turn_mode_ = false;  // Button-initiated one-shot turn: return to Idle after TTS stop
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
@@ -152,6 +167,8 @@ private:
     void HandleStateChangedEvent();
     void HandleToggleChatEvent();
     void HandleStartListeningEvent();
+    void HandleStartSingleTurnEvent();
+    void HandleAbortToIdleEvent();
     void HandleStopListeningEvent();
     void HandleNetworkConnectedEvent();
     void HandleNetworkDisconnectedEvent();

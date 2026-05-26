@@ -276,7 +276,12 @@ void McpServer::AddUserOnlyTools() {
                 }
                 http->Close();
 
-                auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
+                std::unique_ptr<LvglAllocatedImage> image;
+                if (content_length >= 3 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F') {
+                    image = std::make_unique<LvglAllocatedImage>(data, content_length, 0, 0, 0, LV_COLOR_FORMAT_RAW_ALPHA);
+                } else {
+                    image = std::make_unique<LvglAllocatedImage>(data, content_length);
+                }
                 display->SetPreviewImage(std::move(image));
                 return true;
             });

@@ -56,6 +56,14 @@ LvglAllocatedImage::LvglAllocatedImage(void* data, size_t size, int width, int h
     image_dsc_.header.stride = stride;
 }
 
+bool LvglAllocatedImage::IsGif() const {
+    if (image_dsc_.data_size >= 3) {
+        auto ptr = image_dsc_.data;
+        return ptr[0] == 'G' && ptr[1] == 'I' && ptr[2] == 'F';
+    }
+    return false;
+}
+
 LvglAllocatedImage::~LvglAllocatedImage() {
     if (image_dsc_.data) {
         heap_caps_free((void*)image_dsc_.data);

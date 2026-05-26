@@ -178,6 +178,8 @@ void Application::Run() {
         MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING |
         MAIN_EVENT_STOP_LISTENING |
+        MAIN_EVENT_START_SINGLE_TURN |
+        MAIN_EVENT_ABORT_TO_IDLE |
         MAIN_EVENT_ACTIVATION_DONE |
         MAIN_EVENT_STATE_CHANGED;
 
@@ -211,6 +213,14 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_START_LISTENING) {
             HandleStartListeningEvent();
+        }
+
+        if (bits & MAIN_EVENT_START_SINGLE_TURN) {
+            HandleStartSingleTurnEvent();
+        }
+
+        if (bits & MAIN_EVENT_ABORT_TO_IDLE) {
+            HandleAbortToIdleEvent();
         }
 
         if (bits & MAIN_EVENT_STOP_LISTENING) {
@@ -319,17 +329,7 @@ void Application::HandleActivationDoneEvent() {
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     });
 
-    // ============================================================
-    // DEBUG: auto-trigger ToggleChatState 5 seconds after activation,
-    // so we can see the WebSocket connection lifecycle without needing
-    // a human to press the button. Remove this block after debugging.
-    // ============================================================
-    Schedule([this]() {
-        ESP_LOGW(TAG, "[DEBUG] auto-toggling chat state in 5s for ws diagnostic");
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        ESP_LOGW(TAG, "[DEBUG] >>> calling ToggleChatState() now");
-        ToggleChatState();
-    });
+
 }
 
 void Application::ActivationTask() {
@@ -553,7 +553,8 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
+                        if (single_turn_mode_ || listening_mode_ == kListeningModeManualStop) {
+                            single_turn_mode_ = false;
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
@@ -689,11 +690,20 @@ void Application::StartListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
 }
 
+void Application::StartSingleTurn() {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_START_SINGLE_TURN);
+}
+
+void Application::AbortToIdle() {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_ABORT_TO_IDLE);
+}
+
 void Application::StopListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
 }
 
 void Application::HandleToggleChatEvent() {
+    single_turn_mode_ = false;
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -748,6 +758,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+    single_turn_mode_ = false;
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -780,7 +791,65 @@ void Application::HandleStartListeningEvent() {
     }
 }
 
+void Application::HandleStartSingleTurnEvent() {
+    auto state = GetDeviceState();
+
+    if (state == kDeviceStateActivating) {
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    } else if (state == kDeviceStateWifiConfiguring) {
+        audio_service_.EnableAudioTesting(true);
+        SetDeviceState(kDeviceStateAudioTesting);
+        return;
+    }
+
+    if (!protocol_) {
+        ESP_LOGE(TAG, "Protocol not initialized");
+        return;
+    }
+
+    single_turn_mode_ = true;
+    play_popup_on_listening_ = true;
+    auto mode = GetDefaultListeningMode();
+
+    if (state == kDeviceStateIdle) {
+        if (!protocol_->IsAudioChannelOpened()) {
+            SetDeviceState(kDeviceStateConnecting);
+            Schedule([this, mode]() {
+                ContinueOpenAudioChannel(mode);
+            });
+            return;
+        }
+        SetListeningMode(mode);
+    } else if (state == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+        SetListeningMode(mode);
+    }
+}
+
+void Application::HandleAbortToIdleEvent() {
+    single_turn_mode_ = false;
+    play_popup_on_listening_ = false;
+    auto state = GetDeviceState();
+
+    if (protocol_) {
+        if (state == kDeviceStateSpeaking) {
+            AbortSpeaking(kAbortReasonNone);
+        } else if (state == kDeviceStateListening) {
+            protocol_->SendStopListening();
+        } else if (state == kDeviceStateConnecting) {
+            protocol_->CloseAudioChannel();
+        }
+    }
+
+    audio_service_.ResetDecoder();
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening || state == kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateIdle);
+    }
+}
+
 void Application::HandleStopListeningEvent() {
+    single_turn_mode_ = false;
     auto state = GetDeviceState();
     
     if (state == kDeviceStateAudioTesting) {
@@ -796,6 +865,7 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    single_turn_mode_ = false;
     if (!protocol_) {
         return;
     }

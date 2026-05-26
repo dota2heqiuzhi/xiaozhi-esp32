@@ -199,21 +199,24 @@ private:
             power_manager_->SetPowerState(PowerState::SHUTDOWN);
         });
 
-        // 电源键单击：切换对话状态
+        // 电源键单击：儿童使用场景下的单轮对话入口
+        // 设计目标：点一下开始听一句，AI 回复完自动回 Idle；下次要说话再点一下。
         pwr_button_->OnClick([this]() {
             auto &app = Application::GetInstance();
             auto current_state = app.GetDeviceState();
             ESP_LOGI(TAG, "Power button click, state: %d", current_state);
-            
+
+            power_save_timer_->WakeUp();
+            if (auto lcd = dynamic_cast<LcdDisplay*>(GetDisplay())) {
+                lcd->SetPreviewImage(nullptr);
+            }
+
             if (current_state == kDeviceStateIdle) {
-                // 模拟唤醒词触发，走和语音唤醒完全一致的路径
-                app.WakeWordInvoke("你好小智");
+                app.StartSingleTurn();
             } else if (current_state == kDeviceStateListening) {
-                app.ToggleChatState();
+                app.StopListening();
             } else if (current_state == kDeviceStateSpeaking) {
-                app.ToggleChatState();
-            } else {
-                power_save_timer_->WakeUp();
+                app.AbortToIdle();
             }
         });
 

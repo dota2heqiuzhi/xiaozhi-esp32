@@ -286,7 +286,11 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
     
-    // Clean up GIF controller
+    // Clean up GIF controllers
+    if (preview_gif_controller_) {
+        preview_gif_controller_->Stop();
+        preview_gif_controller_.reset();
+    }
     if (gif_controller_) {
         gif_controller_->Stop();
         gif_controller_.reset();
@@ -848,7 +852,7 @@ void LcdDisplay::SetupUI() {
 
     /* Middle layer: preview_image_ - centered display */
     preview_image_ = lv_image_create(screen);
-    lv_obj_set_size(preview_image_, width_ / 2, height_ / 2);
+    lv_obj_set_size(preview_image_, width_ * 4 / 5, height_ * 4 / 5);
     lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
 
@@ -860,10 +864,17 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_bg_color(top_bar_, lvgl_theme->background_color(), 0);
     lv_obj_set_style_border_width(top_bar_, 0, 0);
     lv_obj_set_style_pad_all(top_bar_, 0, 0);
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+    lv_obj_set_style_pad_top(top_bar_, lvgl_theme->spacing(5), 0);     // 博亿朗圆角屏：往下移避开圆角
+    lv_obj_set_style_pad_bottom(top_bar_, lvgl_theme->spacing(2), 0);
+    lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(10), 0);   // 博亿朗圆角屏需要更大间距
+    lv_obj_set_style_pad_right(top_bar_, lvgl_theme->spacing(10), 0);  // 博亿朗圆角屏需要更大间距
+#else
     lv_obj_set_style_pad_top(top_bar_, lvgl_theme->spacing(2), 0);
     lv_obj_set_style_pad_bottom(top_bar_, lvgl_theme->spacing(2), 0);
     lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(4), 0);
     lv_obj_set_style_pad_right(top_bar_, lvgl_theme->spacing(4), 0);
+#endif
     lv_obj_set_flex_flow(top_bar_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(top_bar_, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
@@ -902,7 +913,11 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_bg_opa(status_bar_, LV_OPA_TRANSP, 0);  // Transparent background
     lv_obj_set_style_border_width(status_bar_, 0, 0);
     lv_obj_set_style_pad_all(status_bar_, 0, 0);
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+    lv_obj_set_style_pad_top(status_bar_, lvgl_theme->spacing(5), 0);  // 和 top_bar_ 对齐（圆角屏）
+#else
     lv_obj_set_style_pad_top(status_bar_, lvgl_theme->spacing(2), 0);
+#endif
     lv_obj_set_style_pad_bottom(status_bar_, lvgl_theme->spacing(2), 0);
     lv_obj_set_scrollbar_mode(status_bar_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_layout(status_bar_, LV_LAYOUT_NONE, 0);  // Use absolute positioning
@@ -992,6 +1007,12 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+    if (boot_emoji_dsc_ && emoji_image_) {
+        lv_image_set_src(emoji_image_, boot_emoji_dsc_->image_dsc());
+        lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
@@ -1001,30 +1022,83 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         return;
     }
 
-    if (image == nullptr) {
+    auto clear_preview = [this]() {
         esp_timer_stop(preview_timer_);
-        lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(preview_image_, nullptr);
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+        if (preview_gif_controller_) {
+            preview_gif_controller_->Stop();
+            preview_gif_controller_.reset();
+        }
         preview_image_cached_.reset();
-        if (gif_controller_) {
+
+        if (boot_emoji_dsc_ && emoji_image_) {
+            lv_image_set_src(emoji_image_, boot_emoji_dsc_->image_dsc());
+            lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+            if (emoji_label_) {
+                lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else if (gif_controller_) {
             gif_controller_->Start();
         }
+        if (emoji_box_) {
+            lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
+    };
+
+    if (image == nullptr) {
+        clear_preview();
         return;
     }
 
+    lv_image_set_src(preview_image_, nullptr);
+    if (preview_gif_controller_) {
+        preview_gif_controller_->Stop();
+        preview_gif_controller_.reset();
+    }
+    preview_image_cached_.reset();
     preview_image_cached_ = std::move(image);
     auto img_dsc = preview_image_cached_->image_dsc();
-    lv_image_set_src(preview_image_, img_dsc);
-    if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
-        // zoom factor 0.5
-        lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
+
+    if (preview_image_cached_->IsGif()) {
+        if (gif_controller_) {
+            gif_controller_->Pause();
+        }
+        preview_gif_controller_ = std::make_unique<LvglGif>(img_dsc);
+        if (preview_gif_controller_->IsLoaded()) {
+            preview_gif_controller_->SetLoopCount(0);
+            preview_gif_controller_->SetFrameCallback([this]() {
+                lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc());
+            });
+            lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc());
+            auto gif_dsc = preview_gif_controller_->image_dsc();
+            if (gif_dsc->header.w > 0 && gif_dsc->header.h > 0) {
+                int scale_w = (width_ * 4 / 5) * 256 / gif_dsc->header.w;
+                int scale_h = (height_ * 4 / 5) * 256 / gif_dsc->header.h;
+                int scale = (scale_w < scale_h) ? scale_w : scale_h;
+                if (scale > 256) scale = 256;
+                lv_image_set_scale(preview_image_, scale);
+            }
+            preview_gif_controller_->Start();
+        } else {
+            ESP_LOGE(TAG, "Failed to load GIF for preview");
+            clear_preview();
+            return;
+        }
+    } else {
+        lv_image_set_src(preview_image_, img_dsc);
+        if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
+            int scale_w = (width_ * 4 / 5) * 256 / img_dsc->header.w;
+            int scale_h = (height_ * 4 / 5) * 256 / img_dsc->header.h;
+            int scale = (scale_w < scale_h) ? scale_w : scale_h;
+            if (scale > 256) scale = 256;
+            lv_image_set_scale(preview_image_, scale);
+        }
     }
 
-    // Hide emoji_box_
-    if (gif_controller_) {
-        gif_controller_->Stop();
+    if (emoji_box_) {
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     esp_timer_stop(preview_timer_);
     ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
@@ -1072,6 +1146,9 @@ void LcdDisplay::ClearChatMessages() {
 #endif
 
 void LcdDisplay::SetEmotion(const char* emotion) {
+    // Boilon V2 uses preview_image for long-lived stroke GIF display.
+    // Keep emotion changes visual-only no-op to avoid interrupting preview GIF playback.
+    return;
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!", emotion);
     }

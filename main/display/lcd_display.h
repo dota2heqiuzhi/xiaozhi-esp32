@@ -11,7 +11,7 @@
 #include <atomic>
 #include <memory>
 
-#define PREVIEW_IMAGE_DURATION_MS 5000
+#define PREVIEW_IMAGE_DURATION_MS 120000  // 120秒（博亿朗定制：笔顺 GIF 需要长时间显示）
 
 
 class LcdDisplay : public LvglDisplay {
@@ -30,6 +30,7 @@ protected:
     lv_obj_t* emoji_label_ = nullptr;
     lv_obj_t* emoji_image_ = nullptr;
     std::unique_ptr<LvglGif> gif_controller_ = nullptr;
+    std::unique_ptr<LvglGif> preview_gif_controller_ = nullptr;
     lv_obj_t* emoji_box_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
@@ -46,6 +47,7 @@ protected:
     
 public:
     ~LcdDisplay();
+    std::unique_ptr<LvglImage> boot_emoji_dsc_ = nullptr;
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
