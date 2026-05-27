@@ -187,6 +187,8 @@ private:
         // 电源键按下：单纯打日志（保护标志由 OnPressUp 维护）
         pwr_button_->OnPressDown([this]() {
             ESP_LOGI(TAG, "Power button press down");
+            Application::GetInstance().ReportClientEvent(
+                "button", "press_down", "{\"btn\":\"power\"}");
         });
 
         // 电源键松开：
@@ -194,16 +196,24 @@ private:
         //   2) 后续松开：若处于"长按已检测、待松手关机"确认期，则真正进入关机流程
         //      此时 GPIO3 已回到 ~185mV(LOW)，ext0(GPIO3,1) 高电平唤醒不会立刻误触发
         pwr_button_->OnPressUp([this]() {
+            auto& app = Application::GetInstance();
             if (pwrbutton_unreleased) {
                 pwrbutton_unreleased = false;
                 ESP_LOGI(TAG, "Power button first release - long press shutdown now armed");
+                app.ReportClientEvent("button", "first_release",
+                                      "{\"btn\":\"power\"}");
                 return;
             }
             if (shutdown_pending_) {
                 shutdown_pending_ = false;
                 ESP_LOGI(TAG, "Power button released after long press - shutting down");
+                app.ReportClientEvent("button", "release_shutdown",
+                                      "{\"btn\":\"power\"}");
                 power_manager_->SetPowerState(PowerState::SHUTDOWN);
+                return;
             }
+            // 普通松开（非首次、非待关机确认期）：也上报，便于诊断"用户其实点了几下"
+            app.ReportClientEvent("button", "press_up", "{\"btn\":\"power\"}");
         });
 
         // 电源键长按：
@@ -212,8 +222,12 @@ private:
         //   改为只标记 shutdown_pending_ = true，等 OnPressUp 时再真正关机。
         //   行为对齐闭源固件 "Button released during confirmation, shutdown cancelled"。
         pwr_button_->OnLongPress([this]() {
+            auto& app = Application::GetInstance();
             if (pwrbutton_unreleased) {
                 ESP_LOGI(TAG, "开机后电源键未松开，忽略长按关机");
+                app.ReportClientEvent(
+                    "button", "long_press_ignored_boot_guard",
+                    "{\"btn\":\"power\"}");
                 return;
             }
             if (shutdown_pending_) {
@@ -221,6 +235,8 @@ private:
             }
             shutdown_pending_ = true;
             ESP_LOGI(TAG, "Power button long press detected - release to shut down");
+            app.ReportClientEvent("button", "long_press_armed",
+                                  "{\"btn\":\"power\"}");
         });
 
         // 电源键单击：儿童使用场景下的单轮对话入口
@@ -229,6 +245,19 @@ private:
             auto &app = Application::GetInstance();
             auto current_state = app.GetDeviceState();
             ESP_LOGI(TAG, "Power button click, state: %d", current_state);
+
+            // 决定分支前先上报：这条是"按键 → 服务端"现场诊断的命脉。
+            // data 里把决策依据全部放进去，服务端日志一行就能定位行为分支。
+            {
+                const char* branch = "ignored";
+                if (current_state == kDeviceStateIdle) branch = "start_single_turn";
+                else if (current_state == kDeviceStateListening) branch = "stop_listening";
+                else if (current_state == kDeviceStateSpeaking) branch = "abort_to_idle";
+                std::string data = std::string("{\"btn\":\"power\",\"state\":")
+                                   + std::to_string(static_cast<int>(current_state))
+                                   + ",\"branch\":\"" + branch + "\"}";
+                app.ReportClientEvent("button", "click", data);
+            }
 
             power_save_timer_->WakeUp();
             if (auto lcd = dynamic_cast<LcdDisplay*>(GetDisplay())) {
@@ -247,6 +276,9 @@ private:
         // 电源键三击：重置WiFi
         pwr_button_->OnMultipleClick([this]() {
             ESP_LOGI(TAG, "Power button triple click: reset WiFi");
+            Application::GetInstance().ReportClientEvent(
+                "button", "triple_click",
+                "{\"btn\":\"power\",\"action\":\"reset_wifi\"}");
             power_save_timer_->WakeUp();
             EnterWifiConfigMode();
         }, 3);

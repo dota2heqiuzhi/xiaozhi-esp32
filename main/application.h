@@ -123,6 +123,24 @@ public:
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
+
+    /**
+     * 上报一条 client_event 给服务端，用于运营态可观测性。
+     *
+     * 设计原则：
+     * - fire-and-forget，绝不阻塞业务，绝不影响主流程
+     * - 失败（protocol 为 null / 通道未开 / SendText 失败）静默忽略
+     * - data_json 必须是已经组好的合法 JSON 值字符串；不解析、不转义
+     *   常用形态："{\"k\":\"v\"}"；空时直接传 "{}"（也可省略）
+     *
+     * 典型使用场景（设备没有串口时的"远程现场"）：
+     *   - 按键回调里上报 OnClick/OnDoubleClick/... 触发时机 + 当时 state
+     *   - SetDeviceState 后上报 state 切换
+     *   - AbortSpeaking 等"设备主动结束某状态"的代码路径上报
+     */
+    void ReportClientEvent(const char* category,
+                           const char* name,
+                           const std::string& data_json = "{}");
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }

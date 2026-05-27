@@ -74,6 +74,27 @@ public:
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
 
+    /**
+     * Fire-and-forget telemetry / observability event.
+     *
+     * Sends a single text frame to the server with the shape:
+     *   {"session_id":"...","type":"client_event","ts":<ms>,
+     *    "category":"<category>","name":"<name>","data":<data_json>}
+     *
+     * Used by Application::ReportClientEvent to surface device-side events
+     * (button presses, state changes, local-initiated aborts, etc.) to the
+     * server so post-mortem debugging is possible without a serial cable.
+     *
+     * - data_json MUST already be a syntactically valid JSON value
+     *   (typically a JSON object string like {"a":1}). Pass "{}" if no extra
+     *   data. The function does NOT escape or validate the payload.
+     * - Never blocks the caller, never throws, never aborts a chat.
+     *   If the audio channel is not open the call is silently dropped.
+     */
+    virtual void SendClientEvent(const std::string& category,
+                                 const std::string& name,
+                                 const std::string& data_json);
+
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
     std::function<void(std::unique_ptr<AudioStreamPacket> packet)> on_incoming_audio_;

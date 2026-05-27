@@ -990,6 +990,12 @@ void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
 
+    // 可观测性：上报每一次 state 切换，便于服务端日志重建状态机时序
+    {
+        std::string data = "{\"to\":" + std::to_string(static_cast<int>(new_state)) + "}";
+        ReportClientEvent("state", "change", data);
+    }
+
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
@@ -1071,9 +1077,32 @@ void Application::Schedule(std::function<void()>&& callback) {
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    // 可观测性：上报本次 abort，便于服务端定位"是谁打断了 LLM/TTS"
+    {
+        std::string data = "{\"reason\":" + std::to_string(static_cast<int>(reason))
+                           + ",\"state\":" + std::to_string(static_cast<int>(GetDeviceState())) + "}";
+        ReportClientEvent("abort", "local", data);
+    }
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }
+}
+
+void Application::ReportClientEvent(const char* category,
+                                    const char* name,
+                                    const std::string& data_json) {
+    // fire-and-forget；只做最基本 null check。
+    // 通道是否真的连接由下层 SendText 自己 graceful 处理（未连接时返回 false 即静默丢弃）。
+    // ⚠️ 不要在这里检查 IsAudioChannelOpened()：按键事件经常发生在 channel 即将
+    //    打开的瞬间（设备从 Idle 单击 → 触发 OpenAudioChannel → 然后才 listen.start），
+    //    如果用 IsAudioChannelOpened() 做前置条件，会把"按键触发瞬间"这个最有
+    //    诊断价值的事件丢掉——这正是我们要观察的现场。
+    if (protocol_ == nullptr) {
+        return;
+    }
+    protocol_->SendClientEvent(category ? category : "",
+                               name ? name : "",
+                               data_json.empty() ? "{}" : data_json);
 }
 
 void Application::SetListeningMode(ListeningMode mode) {

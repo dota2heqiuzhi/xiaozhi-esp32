@@ -1,6 +1,7 @@
 #include "protocol.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #define TAG "Protocol"
 
@@ -76,6 +77,36 @@ void Protocol::SendStopListening() {
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);
+}
+
+void Protocol::SendClientEvent(const std::string& category,
+                               const std::string& name,
+                               const std::string& data_json) {
+    // 设备开机后的相对毫秒数；服务端可以用 connection 入站日志时间 + 此 ts 反推
+    // 设备本地"按键时刻 vs ASR完成时刻"的精确间隔。
+    uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
+
+    std::string message;
+    message.reserve(160 + category.size() + name.size() + data_json.size());
+    message += "{\"session_id\":\"";
+    message += session_id_;
+    message += "\",\"type\":\"client_event\",\"ts\":";
+    message += std::to_string(ts_ms);
+    message += ",\"category\":\"";
+    message += category;
+    message += "\",\"name\":\"";
+    message += name;
+    message += "\",\"data\":";
+    // data_json 必须是合法 JSON 值（通常是对象字符串）。空时调用方传 "{}"。
+    if (data_json.empty()) {
+        message += "{}";
+    } else {
+        message += data_json;
+    }
+    message += "}";
+
+    // fire-and-forget：若 SendText 返回 false（通道未开 / 出错）静默丢弃
+    (void)SendText(message);
 }
 
 bool Protocol::IsTimeout() const {
