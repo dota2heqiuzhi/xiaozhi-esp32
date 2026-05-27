@@ -73,6 +73,15 @@ private:
     esp_lcd_panel_io_handle_t panel_io = NULL;
     esp_lcd_panel_handle_t panel = NULL;
 
+    // 长按关机两阶段确认状态：
+    //   false = 空闲；true = 已检测到长按，等待用户松手后才真正关机。
+    //   对齐闭源固件 "Button released during confirmation, shutdown cancelled" 行为：
+    //   - 长按 2s 触发 BUTTON_LONG_PRESS_START 时仅设置标志位，不立即 deep sleep
+    //   - 用户松手时若标志位为真，再走真正的 SHUTDOWN
+    //   这样做避免了 BUTTON_LONG_PRESS_START 触发瞬间 GPIO3 仍 HIGH 导致
+    //   esp_deep_sleep_start() 立刻被 ext0(GPIO3,1) 自唤醒（看起来"长按变重启"）的问题
+    bool shutdown_pending_ = false;
+
     // 音量映射函数：将内部音量(0-80)映射为显示音量(0-100%)
     int MapVolumeForDisplay(int internal_volume) {
         if (internal_volume < 0) internal_volume = 0;
@@ -81,7 +90,7 @@ private:
     }
     
     void InitializePowerManager() {
-        power_manager_ = new PowerManager(PWR_ADC_GPIO, shared_adc_handle_, shared_adc_cali_handle_);
+        power_manager_ = new PowerManager(PWR_BATTERY_ADC_GPIO, shared_adc_handle_, shared_adc_cali_handle_);
         power_manager_->OnChargingStatusChanged([this](bool is_charging) {
             if (is_charging) {
                 power_save_timer_->SetEnabled(false);
@@ -104,8 +113,7 @@ private:
         });
         power_save_timer_->OnShutdownRequest([this]() {
             ESP_LOGI(TAG, "Shutting down");
-            rtc_gpio_set_level(PWR_EN_GPIO, 0);
-            rtc_gpio_hold_dis(PWR_EN_GPIO);
+            PowerController::Instance().PowerOff();
         });
         power_save_timer_->SetEnabled(true);
     }
@@ -181,22 +189,38 @@ private:
             ESP_LOGI(TAG, "Power button press down");
         });
 
-        // 电源键松开：第一次松开后，开机保护标志归零，后续长按关机才有效
+        // 电源键松开：
+        //   1) 第一次松开：解除开机保护，使长按关机生效
+        //   2) 后续松开：若处于"长按已检测、待松手关机"确认期，则真正进入关机流程
+        //      此时 GPIO3 已回到 ~185mV(LOW)，ext0(GPIO3,1) 高电平唤醒不会立刻误触发
         pwr_button_->OnPressUp([this]() {
             if (pwrbutton_unreleased) {
                 pwrbutton_unreleased = false;
                 ESP_LOGI(TAG, "Power button first release - long press shutdown now armed");
+                return;
+            }
+            if (shutdown_pending_) {
+                shutdown_pending_ = false;
+                ESP_LOGI(TAG, "Power button released after long press - shutting down");
+                power_manager_->SetPowerState(PowerState::SHUTDOWN);
             }
         });
 
-        // 电源键长按关机
+        // 电源键长按：
+        //   不再立即进入 deep sleep（按住时 GPIO3=HIGH，立刻就被自己的高电平唤醒源唤醒，
+        //   表现为"长按变重启"的死循环）。
+        //   改为只标记 shutdown_pending_ = true，等 OnPressUp 时再真正关机。
+        //   行为对齐闭源固件 "Button released during confirmation, shutdown cancelled"。
         pwr_button_->OnLongPress([this]() {
             if (pwrbutton_unreleased) {
                 ESP_LOGI(TAG, "开机后电源键未松开，忽略长按关机");
                 return;
             }
-            ESP_LOGI(TAG, "Power button long press - shutting down");
-            power_manager_->SetPowerState(PowerState::SHUTDOWN);
+            if (shutdown_pending_) {
+                return;  // 已经在等松手了，不重复打日志
+            }
+            shutdown_pending_ = true;
+            ESP_LOGI(TAG, "Power button long press detected - release to shut down");
         });
 
         // 电源键单击：儿童使用场景下的单轮对话入口
@@ -317,12 +341,14 @@ public:
         };
         ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &shared_adc_handle_));
         
-        // 配置电池检测通道 (CH3)
+        // 配置电池检测通道 (GPIO4 / ADC1_CH3) 与 VBUS 检测通道 (GPIO5 / ADC1_CH4)。
+        // 卖家闭源固件字符串明确显示：GPIO5 是 VBUS ADC，不是 PWR_EN 输出脚。
         adc_oneshot_chan_cfg_t chan_cfg = {
             .atten = ADC_ATTEN_DB_12,
             .bitwidth = ADC_BITWIDTH_12,
         };
         ESP_ERROR_CHECK(adc_oneshot_config_channel(shared_adc_handle_, ADC_CHANNEL_3, &chan_cfg));
+        ESP_ERROR_CHECK(adc_oneshot_config_channel(shared_adc_handle_, ADC_CHANNEL_4, &chan_cfg));
         
         // 创建校准 handle
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED

@@ -23,8 +23,8 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_10
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define PWR_BUTTON_GPIO         GPIO_NUM_3
-#define PWR_EN_GPIO             GPIO_NUM_5
-#define PWR_ADC_GPIO            GPIO_NUM_4
+#define PWR_BATTERY_ADC_GPIO    GPIO_NUM_4
+#define PWR_VBUS_ADC_GPIO       GPIO_NUM_5
 #define PWR_BUTTON_TIME         3000000U
 
 #define WIFI_BUTTON_GPIO        GPIO_NUM_6

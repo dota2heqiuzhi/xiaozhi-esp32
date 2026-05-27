@@ -184,12 +184,26 @@ public:
                     //   - 用户再次按下电源键 → GPIO3 升到 ~3200mV=HIGH → 满足唤醒条件
                     //   - 禁用内部上下拉：ADC 按键外部已有偏置电路，内部拉会和它打架
                     //   - 参见 diff-analysis.md "按键相关差异"一节（卖家用 pulldown_dis）
+                    //
+                    // 调用约定：本分支只能在用户已经松开电源键（GPIO3=LOW）后被触发，
+                    // 由 boilon_v2_board.cc 的 shutdown_pending_ 两阶段确认机制保证。
+                    // 如果在 GPIO3 仍为 HIGH 时进入 deep sleep，会被 ext0_wakeup 立刻自唤醒
+                    // 表现为"长按变重启"的死循环。这里再加一道防线：等 GPIO3 稳定到 LOW 才 sleep。
+                    const int kMaxWaitReleaseMs = 200;
+                    int waited_ms = 0;
+                    while (gpio_get_level(PWR_BUTTON_GPIO) == 1 && waited_ms < kMaxWaitReleaseMs) {
+                        vTaskDelay(10 / portTICK_PERIOD_MS);
+                        waited_ms += 10;
+                    }
+                    if (waited_ms > 0) {
+                        ESP_LOGW(TAG, "PWR_BUTTON still HIGH; waited %d ms before deep sleep", waited_ms);
+                    }
+
                     ESP_ERROR_CHECK(esp_sleep_enable_ext0_wakeup(PWR_BUTTON_GPIO, 1));  // 高电平唤醒
                     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(PWR_BUTTON_GPIO));            // 禁用下拉（学卖家）
                     ESP_ERROR_CHECK(rtc_gpio_pullup_dis(PWR_BUTTON_GPIO));              // 禁用上拉
                     /* 关闭电源使能 */
-                    rtc_gpio_set_level(PWR_EN_GPIO, 0);
-                    rtc_gpio_hold_dis(PWR_EN_GPIO);
+                    power_controller_->PowerOff();
                     
                     // 确保所有外设已关闭
                     vTaskDelay(200 / portTICK_PERIOD_MS);
