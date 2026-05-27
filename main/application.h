@@ -158,6 +158,7 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool single_turn_mode_ = false;  // Button-initiated one-shot turn: return to Idle after TTS stop
+    bool first_single_turn_welcome_ = true;  // Play welcome sound before the first button-initiated listening turn
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
@@ -175,6 +176,8 @@ private:
     void HandleActivationDoneEvent();
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
+    void ContinueOpenAudioChannelForSingleTurn(ListeningMode mode);
+    void StartSingleTurnListening(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
 
     // Activation task (runs in background)

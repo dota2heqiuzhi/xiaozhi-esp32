@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_random.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -809,22 +810,66 @@ void Application::HandleStartSingleTurnEvent() {
     }
 
     single_turn_mode_ = true;
-    play_popup_on_listening_ = true;
+    play_popup_on_listening_ = false;
     auto mode = GetDefaultListeningMode();
 
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             Schedule([this, mode]() {
-                ContinueOpenAudioChannel(mode);
+                ContinueOpenAudioChannelForSingleTurn(mode);
             });
             return;
         }
-        SetListeningMode(mode);
+        StartSingleTurnListening(mode);
     } else if (state == kDeviceStateSpeaking) {
-        AbortSpeaking(kAbortReasonNone);
-        SetListeningMode(mode);
+        AbortToIdle();
     }
+}
+
+void Application::ContinueOpenAudioChannelForSingleTurn(ListeningMode mode) {
+    if (GetDeviceState() != kDeviceStateConnecting) {
+        return;
+    }
+
+    if (!protocol_->IsAudioChannelOpened()) {
+        if (!protocol_->OpenAudioChannel()) {
+            SetDeviceState(kDeviceStateIdle);
+            return;
+        }
+    }
+
+    StartSingleTurnListening(mode);
+}
+
+void Application::StartSingleTurnListening(ListeningMode mode) {
+    // Critical ordering for children single-turn mode:
+    // play local welcome/cue sounds first, wait until playback is drained,
+    // then send listen.start and enable microphone processing. Otherwise the
+    // local sounds can be captured by ASR as the first user utterance.
+#ifdef CONFIG_BOARD_TYPE_BOILON_V2
+    if (first_single_turn_welcome_) {
+        static const std::string_view welcome_sounds[] = {
+            Lang::Sounds::OGG_BOILON_WELCOME_0,
+            Lang::Sounds::OGG_BOILON_WELCOME_1,
+            Lang::Sounds::OGG_BOILON_WELCOME_2,
+            Lang::Sounds::OGG_BOILON_WELCOME_3,
+            Lang::Sounds::OGG_BOILON_WELCOME_4,
+        };
+        first_single_turn_welcome_ = false;
+        audio_service_.PlaySound(welcome_sounds[esp_random() % (sizeof(welcome_sounds) / sizeof(welcome_sounds[0]))]);
+        audio_service_.WaitForPlaybackQueueEmpty();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+#else
+    const auto& sound = first_single_turn_welcome_ ? Lang::Sounds::OGG_WELCOME : Lang::Sounds::OGG_POPUP;
+    first_single_turn_welcome_ = false;
+    audio_service_.PlaySound(sound);
+#endif
+    audio_service_.WaitForPlaybackQueueEmpty();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    SetListeningMode(mode);
 }
 
 void Application::HandleAbortToIdleEvent() {
