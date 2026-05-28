@@ -81,13 +81,19 @@ public:
     PowerManager(gpio_num_t pin, adc_oneshot_unit_handle_t shared_adc = NULL, adc_cali_handle_t shared_cali = NULL) 
         : charging_pin_(pin), external_adc_handle_(shared_adc), external_adc_cali_handle_(shared_cali) {
         power_controller_ = &PowerController::Instance();
-        // 初始化充电引脚
+        // 初始化充电完成 DONE 检测引脚 (GPIO16)。
+        // 配置参数严格对齐 vendor 闭源固件实测 boot log：
+        //   "I (266) gpio: GPIO[16]| InputEn:1| OutputEn:0| Pullup:1| Pulldown:0| Intr:2"
+        //   "I (276) PowerManager: 电池充满检测引脚 GPIO16 初始化完成
+        //                          (当前状态: 未充满, 下降沿中断)"
+        // ⚠️ 严禁把这里改成传 GPIO4 (电池 ADC 引脚)，否则会高阻化电池检测线
+        //    → 破坏 PMIC 自保持 → 松手即掉电（曾在此踩坑数小时）。
         gpio_config_t io_conf = {};
-        io_conf.intr_type = GPIO_INTR_DISABLE;
+        io_conf.intr_type = GPIO_INTR_NEGEDGE;       // vendor: Intr=2 = 下降沿
         io_conf.mode = GPIO_MODE_INPUT;
         io_conf.pin_bit_mask = (1ULL << charging_pin_);
-        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE; 
-        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;     
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;     // vendor: Pullup=1
         gpio_config(&io_conf);
 
         // 创建电池电量检查定时器

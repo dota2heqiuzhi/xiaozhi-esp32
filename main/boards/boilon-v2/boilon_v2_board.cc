@@ -90,7 +90,15 @@ private:
     }
     
     void InitializePowerManager() {
-        power_manager_ = new PowerManager(PWR_BATTERY_ADC_GPIO, shared_adc_handle_, shared_adc_cali_handle_);
+        // ⚠️ 关键修复 (2026-05-28)：
+        //   之前错误地传 PWR_BATTERY_ADC_GPIO (GPIO4) 当 charging_pin。
+        //   PowerManager 构造函数会调 gpio_config(&io_conf) 把传入的 pin 配成
+        //   普通 INPUT + 上下拉全 DISABLE，等于把 GPIO4 改成高阻悬空 ——
+        //   而 GPIO4 是电池电压检测 ADC 输入，主板 PMIC 自保持环路依赖这条线
+        //   的电气特性。结果就是松手即掉电。
+        //   正确做法：传 vendor 实测的 DONE 引脚 GPIO16（充电完成下降沿中断），
+        //   GPIO4 完全留给 ADC 自己用。
+        power_manager_ = new PowerManager(PWR_CHARGING_DONE_GPIO, shared_adc_handle_, shared_adc_cali_handle_);
         power_manager_->OnChargingStatusChanged([this](bool is_charging) {
             if (is_charging) {
                 power_save_timer_->SetEnabled(false);

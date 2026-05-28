@@ -25,6 +25,13 @@
 #define PWR_BUTTON_GPIO         GPIO_NUM_3
 #define PWR_BATTERY_ADC_GPIO    GPIO_NUM_4
 #define PWR_VBUS_ADC_GPIO       GPIO_NUM_5
+// 充电完成 DONE 检测引脚 (来自 vendor 闭源固件 boot log 实测：
+//   "电池充满检测引脚 GPIO16 初始化完成 (当前状态: 未充满, 下降沿中断)")
+// 之前我们错误地把 PWR_BATTERY_ADC_GPIO (GPIO4) 当 charging_pin 传给 PowerManager
+// 构造函数，PowerManager 内部 gpio_config(&io_conf) 把 GPIO4 重新配成普通 INPUT +
+// 上下拉全 DISABLE 高阻悬空 -> 破坏了主板 PMIC 通过电池 ADC 线维持自保持的环路
+// -> 松手即掉电。修复就是改用真正的 DONE 引脚 GPIO16。
+#define PWR_CHARGING_DONE_GPIO  GPIO_NUM_16
 #define PWR_BUTTON_TIME         3000000U
 
 #define WIFI_BUTTON_GPIO        GPIO_NUM_6
