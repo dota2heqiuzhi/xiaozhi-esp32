@@ -64,7 +64,7 @@ private:
     adc_oneshot_unit_handle_t shared_adc_handle_ = NULL;  // ADC1 共享 handle
     adc_cali_handle_t shared_adc_cali_handle_ = NULL;    // ADC1 校准 handle
     Button boot_button_;
-    Button* pwr_button_;  // ADC 按键，在 InitializeButtons 中创建
+    Button* pwr_button_;  // GPIO Button (GPIO3, INPUT_PULLDOWN, active_high)，在 InitializeButtons 中 new
     Button wifi_button;
     Button cmd_button;
     LcdDisplay* display_;
@@ -72,15 +72,6 @@ private:
     PowerManager* power_manager_;
     esp_lcd_panel_io_handle_t panel_io = NULL;
     esp_lcd_panel_handle_t panel = NULL;
-
-    // 长按关机两阶段确认状态：
-    //   false = 空闲；true = 已检测到长按，等待用户松手后才真正关机。
-    //   对齐闭源固件 "Button released during confirmation, shutdown cancelled" 行为：
-    //   - 长按 2s 触发 BUTTON_LONG_PRESS_START 时仅设置标志位，不立即 deep sleep
-    //   - 用户松手时若标志位为真，再走真正的 SHUTDOWN
-    //   这样做避免了 BUTTON_LONG_PRESS_START 触发瞬间 GPIO3 仍 HIGH 导致
-    //   esp_deep_sleep_start() 立刻被 ext0(GPIO3,1) 自唤醒（看起来"长按变重启"）的问题
-    bool shutdown_pending_ = false;
 
     // 音量映射函数：将内部音量(0-80)映射为显示音量(0-100%)
     int MapVolumeForDisplay(int internal_volume) {
@@ -166,71 +157,67 @@ private:
     }
 
     void InitializeButtons() {
-        // 开机保护：如果用户按住电源键开机，在第一次松开前长按事件一律忽略，
-        // 防止"长按开机"被误判为"长按关机"导致刚开机就关机。
-        // 开机时默认 true，等第一次 OnPressUp 置 false。
-        static bool pwrbutton_unreleased = true;
+        // ============================================================
+        // 行为对齐 jiuchuan-s3 父板（vendor binary 字符串铁证：
+        //   `void JiuchuanDevBoard::InitializeButtons()
+        //    ./main/boards/jiuchuan-s3/jiuchuan_dev_board.cc`
+        //   表明 vendor 在 boilon-v2 上直接复用了父板的这个实现）。
+        //
+        // 关键设计点（务必保持，曾踩坑数小时）：
+        //   1. 先 gpio_get_level(GPIO3) 读电平，若用户按住开机就把
+        //      pwrbutton_unreleased 标记为 true，避免"长按开机"被误判为
+        //      "长按关机"立即触发关机。
+        //   2. GPIO Button + 内部下拉（不是 ADC Button！ADC Button 把
+        //      GPIO3 配成高阻输入，会破坏主板电源自保持电路依赖的电气
+        //      特性，松手即整板掉电。这条由 vendor boot log 实测确认：
+        //      `I (246) gpio: GPIO[3]| InputEn:1 ... Pulldown:1`）。
+        //   3. 关机走 OnLongPress + 5 次防抖确认 GPIO3 仍 HIGH，**不**
+        //      使用 OnPressUp 回调（vendor 完全没有 OnPressUp，自己加
+        //      的 first_release/shutdown_pending 状态机过去几天没起到
+        //      正确作用，反而是嫌疑代码）。
+        // ============================================================
 
-        // 播放/电源键是 ADC 按键 (ADC1_CH2 / GPIO3)
-        // 实测: 不按=~229 (raw), 按下=~3975 (raw)
-        // 对应电压约: 不按=~185mV, 按下=~3200mV
-        // 设置检测阈值: min=2000mV, max=3500mV
-        ESP_LOGI(TAG, "Creating ADC button on ADC1_CH2 (play/power button)");
-        button_adc_config_t adc_btn_cfg = {
-            .adc_handle = &shared_adc_handle_,
-            .unit_id = ADC_UNIT_1,
-            .adc_channel = 2,  // ADC1_CH2 = GPIO3
-            .button_index = 0,
-            .min = 2000,  // 按下时电压 > 2000mV
-            .max = 3500,  // 按下时电压 < 3500mV
-        };
-        pwr_button_ = new AdcButton(adc_btn_cfg);
-        ESP_LOGI(TAG, "ADC power button created");
+        // boot 时检测电源键是否被按住（用户按住电源键开机的常见情形）。
+        // 若是，标记 pwrbutton_unreleased，等用户第一次松手后由
+        // OnPressDown 重新触发时清除（OnPressDown 在 button library 内
+        // 是边沿触发：从 LOW->HIGH 才回调，所以"用户已经按着"时不会立
+        // 即触发，必须等用户松手再按一次才会清除——刚好就是我们想要的）。
+        static bool pwrbutton_unreleased = false;
+        if (gpio_get_level(GPIO_NUM_3) == 1) {
+            pwrbutton_unreleased = true;
+            ESP_LOGI(TAG, "Power button held HIGH at boot - long press shutdown disabled until first release");
+        }
 
+        // GPIO3 = 电源键，普通 GPIO Button + 内部下拉，按下=HIGH (active_high)。
+        ESP_LOGI(TAG, "Creating GPIO button on GPIO%d (power button, INPUT_PULLDOWN, active_high)", PWR_BUTTON_GPIO);
+        pwr_button_ = new Button(PWR_BUTTON_GPIO, true /* active_high */);
+        ESP_LOGI(TAG, "Power button initialized");
+
+        // BOOT 按键单击：唤醒省电定时器
         boot_button_.OnClick([this]() {
             ESP_LOGI(TAG, "Boot button clicked");
             power_save_timer_->WakeUp();
         });
 
-        // 电源键按下：单纯打日志（保护标志由 OnPressUp 维护）
+        // 电源键按下：清除 pwrbutton_unreleased（第一次完整 down 边沿到来时）。
+        // 行为对齐 jiuchuan-s3 父板：父板这里仅设标志位，**不**做其他事。
         pwr_button_->OnPressDown([this]() {
             ESP_LOGI(TAG, "Power button press down");
+            pwrbutton_unreleased = false;
             Application::GetInstance().ReportClientEvent(
                 "button", "press_down", "{\"btn\":\"power\"}");
         });
 
-        // 电源键松开：
-        //   1) 第一次松开：解除开机保护，使长按关机生效
-        //   2) 后续松开：若处于"长按已检测、待松手关机"确认期，则真正进入关机流程
-        //      此时 GPIO3 已回到 ~185mV(LOW)，ext0(GPIO3,1) 高电平唤醒不会立刻误触发
-        pwr_button_->OnPressUp([this]() {
-            auto& app = Application::GetInstance();
-            if (pwrbutton_unreleased) {
-                pwrbutton_unreleased = false;
-                ESP_LOGI(TAG, "Power button first release - long press shutdown now armed");
-                app.ReportClientEvent("button", "first_release",
-                                      "{\"btn\":\"power\"}");
-                return;
-            }
-            if (shutdown_pending_) {
-                shutdown_pending_ = false;
-                ESP_LOGI(TAG, "Power button released after long press - shutting down");
-                app.ReportClientEvent("button", "release_shutdown",
-                                      "{\"btn\":\"power\"}");
-                power_manager_->SetPowerState(PowerState::SHUTDOWN);
-                return;
-            }
-            // 普通松开（非首次、非待关机确认期）：也上报，便于诊断"用户其实点了几下"
-            app.ReportClientEvent("button", "press_up", "{\"btn\":\"power\"}");
-        });
-
-        // 电源键长按：
-        //   不再立即进入 deep sleep（按住时 GPIO3=HIGH，立刻就被自己的高电平唤醒源唤醒，
-        //   表现为"长按变重启"的死循环）。
-        //   改为只标记 shutdown_pending_ = true，等 OnPressUp 时再真正关机。
-        //   行为对齐闭源固件 "Button released during confirmation, shutdown cancelled"。
+        // 电源键长按：行为完全对齐 jiuchuan-s3 父板的 OnLongPress：
+        //   - 若 pwrbutton_unreleased=true（用户按住电源键开机还没松手），
+        //     则忽略本次长按事件，避免开机即关机。
+        //   - 否则做 5 次 100ms 防抖：每次读 GPIO3 电平，一旦读到 LOW 就
+        //     说明用户松手了（abort），返回；连续 500ms 都是 HIGH 才真正
+        //     调 SetPowerState(SHUTDOWN) 进入关机流程。
+        //   - 关机流程内部由 PowerManager 走 esp_deep_sleep_start()。
         pwr_button_->OnLongPress([this]() {
             auto& app = Application::GetInstance();
+            ESP_LOGI(TAG, "Power button long press detected");
             if (pwrbutton_unreleased) {
                 ESP_LOGI(TAG, "开机后电源键未松开，忽略长按关机");
                 app.ReportClientEvent(
@@ -238,13 +225,25 @@ private:
                     "{\"btn\":\"power\"}");
                 return;
             }
-            if (shutdown_pending_) {
-                return;  // 已经在等松手了，不重复打日志
+            // 5 次 100ms 防抖确认（对齐 jiuchuan-s3 父板）
+            for (int i = 0; i < 5; i++) {
+                int level = gpio_get_level(PWR_BUTTON_GPIO);
+                ESP_LOGD(TAG, "Debounce check %d: GPIO%d level=%d",
+                         i + 1, PWR_BUTTON_GPIO, level);
+                if (level == 0) {
+                    ESP_LOGW(TAG, "Power button released during confirmation - abort shutdown");
+                    app.ReportClientEvent(
+                        "button", "long_press_aborted",
+                        "{\"btn\":\"power\"}");
+                    return;
+                }
+                vTaskDelay(100 / portTICK_PERIOD_MS);
             }
-            shutdown_pending_ = true;
-            ESP_LOGI(TAG, "Power button long press detected - release to shut down");
-            app.ReportClientEvent("button", "long_press_armed",
-                                  "{\"btn\":\"power\"}");
+            ESP_LOGI(TAG, "Confirmed power button long-pressed - initiating shutdown");
+            app.ReportClientEvent(
+                "button", "long_press_shutdown",
+                "{\"btn\":\"power\"}");
+            power_manager_->SetPowerState(PowerState::SHUTDOWN);
         });
 
         // 电源键单击：儿童使用场景下的单轮对话入口
@@ -281,7 +280,7 @@ private:
             }
         });
 
-        // 电源键三击：重置WiFi
+        // 电源键三击：重置WiFi（对齐 jiuchuan-s3 父板）
         pwr_button_->OnMultipleClick([this]() {
             ESP_LOGI(TAG, "Power button triple click: reset WiFi");
             Application::GetInstance().ReportClientEvent(
@@ -401,8 +400,8 @@ public:
 #endif
 
         InitializeI2c();
-        InitializeButtons();       // AdcButton 复用 shared_adc_handle_
-        InitializePowerManager();   // PowerManager 也复用 shared_adc_handle_
+        InitializeButtons();       // GPIO Button (power) + GPIO Buttons (boot/volume)
+        InitializePowerManager();   // PowerManager 复用 shared_adc_handle_
         InitializePowerSaveTimer();
         InitializeDisplay();
         GetBacklight()->RestoreBrightness();
