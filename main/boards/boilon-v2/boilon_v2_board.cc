@@ -219,8 +219,27 @@ private:
 
         // 电源键单击：单轮对话入口（儿童使用场景）
         // 设计目标：点一下开始听一句，AI 回复完自动回 Idle；下次要说话再点一下。
+        //
+        // 特殊路径：如果当前正在显示笔顺 GIF（用户问"X字怎么写"后），按键
+        // 的语义改为"退出 GIF 回到默认 emoji"，不进入新一轮对话。原因：
+        //   1. GIF 是模态视图，符合"按键退出全屏"的用户心智
+        //   2. 给孩子留消化空隙（看完 → 屏幕变回 emoji → 再决定要不要问下一个）
+        //   3. 顺便规避 protocol.cc 120s timeout BUG：在 GIF 期间按键不去
+        //      重连，避免"重连失败 → 静默回 Idle"的错觉。
         pwr_button_->OnClick([this]() {
             auto& app = Application::GetInstance();
+            auto lcd = dynamic_cast<LcdDisplay*>(GetDisplay());
+
+            // 早返回路径：preview 显示中 → 关 preview + 唤醒省电定时器即返回
+            if (lcd && lcd->IsShowingPreview()) {
+                ESP_LOGI(TAG, "Power button click during preview - dismiss preview only");
+                lcd->SetPreviewImage(nullptr);
+                power_save_timer_->WakeUp();
+                app.ReportClientEvent("button", "click_dismiss_preview",
+                                      "{\"btn\":\"power\"}");
+                return;
+            }
+
             auto current_state = app.GetDeviceState();
             ESP_LOGI(TAG, "Power button click, state: %d", current_state);
 
@@ -235,9 +254,6 @@ private:
             app.ReportClientEvent("button", "click", data);
 
             power_save_timer_->WakeUp();
-            if (auto lcd = dynamic_cast<LcdDisplay*>(GetDisplay())) {
-                lcd->SetPreviewImage(nullptr);
-            }
 
             if (current_state == kDeviceStateIdle) {
                 app.StartSingleTurn();

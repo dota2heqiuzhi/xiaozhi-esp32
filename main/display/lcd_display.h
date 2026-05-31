@@ -11,7 +11,9 @@
 #include <atomic>
 #include <memory>
 
-#define PREVIEW_IMAGE_DURATION_MS 120000  // 120秒（博亿朗定制：笔顺 GIF 需要长时间显示）
+#define PREVIEW_IMAGE_DURATION_MS 60000  // 60秒（博亿朗定制：笔顺 GIF 显示时长。
+                                          // 60s 同时也确保自动消失时距离上次下行 < 120s
+                                          // 的 protocol timeout，避免后续按键触发重连失败 BUG）
 
 
 class LcdDisplay : public LvglDisplay {
@@ -52,6 +54,9 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    // 当前是否正在显示 preview（笔顺 GIF）。板级按键回调用此方法决定
+    // "按键 = 退出 preview" 还是 "按键 = 进入正常对话"。
+    bool IsShowingPreview() const { return preview_image_cached_ != nullptr; }
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
